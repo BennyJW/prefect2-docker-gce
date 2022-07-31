@@ -1,22 +1,21 @@
-# Requires the GitHub action secrets:
-#
-# GCE_SA_KEY - service account key for pushing docker image to
-#               Google Cloud Artifacts, then deploy to Google Compute Engine
-# PREFECT_CLOUD_API_KEY
-# PREFECT_WORKSPACE
+# See the README for required Github Action secrets
 
 name: Build and Deploy to Google Compute Engine
 
 on:
   push:
     branches:
-    - main
+      - main
 
 env:
   GCP_ARTIFACT_REPOSITORY: prefect-dockers
   GCP_ARTIFACT_REPOSITORY_HOSTNAME: us-east1-docker.pkg.dev
   GCE_INSTANCE: prefect-docker-vm
   GCE_INSTANCE_ZONE: us-east1-b
+  GCE_INSTANCE_MACHINE_TYPE: e2-micro
+
+  PREFECT_GCS_BLOCK_NAME: a-block-called-wanda
+  PREFECT_API_URL: "https://api.prefect.cloud/api/accounts/${{ secrets.PREFECT_ACCOUNT_ID }}/workspaces/${{ secrets.PREFECT_WORKSPACE_ID }}"
 
 jobs:
   setup-build-publish-deploy:
@@ -25,47 +24,89 @@ jobs:
 
     # Add "id-token" with the intended permissions.
     permissions:
-      contents: 'read'
-      id-token: 'write'
+      contents: "read"
+      id-token: "write"
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v2
+      - name: Checkout
+        uses: actions/checkout@v3
 
-    # Also sets the GCP_PROJECT env
-    - name: 'Authenticate to Google Cloud'
-      uses: 'google-github-actions/auth@v0.7.1' 
-      with:
-        credentials_json: '${{ secrets.GOOGLE_CLOUD_SA_KEY }}'
+      - name: Set up Python 3.x
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
 
-    # Setup gcloud CLI
-    - name: Set up Cloud SDK
-      uses: 'google-github-actions/setup-gcloud@v0.6.0'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip --no-cache-dir
+          pip install -r ./src/requirements.txt --no-cache-dir
 
-    # Configure Docker to use the gcloud command-line tool as a credential
-    # helper for authentication
-    - name: gcloud configure docker auth
-      run: |-
-        gcloud --quiet auth configure-docker us-east1-docker.pkg.dev
+      # This step could be done manually, outside the Github Action
+      - name: Build and Apply Prefect deployments
+        run: |
+          prefect work-queue ls
+          prefect deployment ls
+          prefect deployment build ./src/my_flow.py:my_data_flow -n my_data_flow -sb gcs/$PREFECT_GCS_BLOCK_NAME -t test
+          prefect deployment apply './my_data_flow-deployment.yaml'
+        env:
+          PREFECT_API_KEY: ${{ secrets.PREFECT_API_KEY }}
 
-    # Build the Docker image
-    - name: Build
-      run: |-
-        docker build --build-arg PREFECT_CLOUD_API_KEY=${{ secrets.PREFECT_CLOUD_API_KEY }} \
-        --build-arg PREFECT_WORKSPACE=${{ secrets.PREFECT_WORKSPACE }} \
-        --tag \
-        "us-east1-docker.pkg.dev/$GCP_PROJECT/$GCP_ARTIFACT_REPOSITORY/$GCE_INSTANCE-image:$GITHUB_SHA" .
+      # Also sets the GCP_PROJECT env
+      - name: "Authenticate to Google Cloud"
+        uses: "google-github-actions/auth@v0"
+        with:
+          credentials_json: "${{ secrets.GOOGLE_CLOUD_SA_KEY }}"
 
-    # Push the Docker image to Google Artifact Registry
-    - name: Publish
-      run: |-
-        docker push \
-        "us-east1-docker.pkg.dev/$GCP_PROJECT/$GCP_ARTIFACT_REPOSITORY/$GCE_INSTANCE-image:$GITHUB_SHA"
+      # Setup gcloud CLI
+      - name: Set up Cloud SDK
+        uses: "google-github-actions/setup-gcloud@v0"
 
-    # Deploy to the compute engine
-    - name: Deploy
-      run: |-
-        gcloud compute instances update-container "$GCE_INSTANCE" \
-          --zone "$GCE_INSTANCE_ZONE" \
-          --container-image \
-          "us-east1-docker.pkg.dev/$GCP_PROJECT/$GCP_ARTIFACT_REPOSITORY/$GCE_INSTANCE-image:$GITHUB_SHA"
+      # Configure Docker to use the gcloud command-line tool as a credential
+      # helper for authentication
+      - name: gcloud configure docker auth
+        run: |-
+          gcloud --quiet auth configure-docker $GCP_ARTIFACT_REPOSITORY_HOSTNAME
+
+      # https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-an-environment-variable
+      - name: set docker image uri
+        run: |-
+          echo "IMAGE_URI=$GCP_ARTIFACT_REPOSITORY_HOSTNAME/$GCP_PROJECT/$GCP_ARTIFACT_REPOSITORY/$GCE_INSTANCE-image:$GITHUB_SHA" >> $GITHUB_ENV
+
+      # Build the Docker image
+      - name: Build
+        run: |-
+          docker build \
+          --build-arg PREFECT_API_KEY=${{ secrets.PREFECT_API_KEY }} \
+          --build-arg PREFECT_ACCOUNT_ID=${{ secrets.PREFECT_ACCOUNT_ID }} \
+          --build-arg PREFECT_WORKSPACE_ID=${{ secrets.PREFECT_WORKSPACE_ID }} \
+          --tag "${{ env.IMAGE_URI }}" \
+          .
+
+      # Push the Docker image to Google Artifact Registry
+      - name: Publish
+        run: |-
+          docker push "${{ env.IMAGE_URI }}"
+
+      # Google will keep copying new docker images to the machine;
+      # we can delete the disks (with --delete-disks=all) or just start
+      # over with a new VM;
+      # Continue-on-error so the flow continues even if this step fails
+      # (i.e., if no such instances have been created previously)
+      - name: Delete
+        continue-on-error: true
+        run: |-
+          gcloud compute instances delete "$GCE_INSTANCE" \
+            --zone "$GCE_INSTANCE_ZONE" \
+            --quiet
+
+      # Note service account permissions and scopes are two different things.
+      # This sets scopes such that the instance can access all services that the
+      # service account can access
+      - name: Deploy
+        run: |-
+          gcloud compute instances create-with-container "$GCE_INSTANCE" \
+            --zone "$GCE_INSTANCE_ZONE" \
+            --machine-type "$GCE_INSTANCE_MACHINE_TYPE" \
+            --service-account "${{ secrets.GCE_SERVICE_ACCOUNT_EMAIL }}" \
+            --scopes "https://www.googleapis.com/auth/cloud-platform" \
+            --container-image "${{ env.IMAGE_URI }}"

@@ -1,7 +1,4 @@
 from prefect import task, flow, get_run_logger
-from prefect.deployments import DeploymentSpec
-from prefect.flow_runners import SubprocessFlowRunner
-
 
 @task
 def get_data():
@@ -15,14 +12,6 @@ def print_data(data):
 def my_data_flow():
     data = get_data()
     print_data(data)
-
-DeploymentSpec(
-    name="gce-deployment",
-    flow=my_data_flow,
-    flow_runner=SubprocessFlowRunner(),
-    tags=['dev'],
-    parameters={}
-)
 
 if __name__ == "__main__":
     my_data_flow()

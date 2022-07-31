@@ -1,22 +1,12 @@
 #!/bin/bash
 
 # Environment variables must be present:
-# PREFECT_CLOUD_API_KEY
-# PREFECT_WORKSPACE
-
-echo 'Logging in to Prefect Cloud'
-prefect cloud login --key $PREFECT_CLOUD_API_KEY -w $PREFECT_WORKSPACE
-
-# Use default local storage
-echo 'Resetting storage to local'
-prefect storage reset-default
+# PREFECT_API_KEY
+# PREFECT_API_URL
 
 echo 'Deploying flow'
-prefect deployment create my_flow.py
-
-echo 'Creating work-queue'
-prefect work-queue create my_queue
+prefect deployment apply 'my_data_flow-deployment.yaml'
 
 echo 'Starting prefect agent'
-prefect agent start my_queue
+prefect agent start -t test
 
