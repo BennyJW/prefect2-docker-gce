@@ -8,7 +8,7 @@ Should have at least the following roles: Artifact Registry Writer, Service Acco
 
 ## Create a Google Cloud Storage bucket, and a Prefect GCS Block
 
-Create a bucket in GCS. Go to bucket permissions and add Storage Admin Access for the Service Account created above.
+Create a bucket in GCS. Go to bucket permissions and add Storage Admin Access for the Service Account created above.  You could also create a separate service account for this purpose.
 
 Go to the Prefect UI and add a new GCS block. Give your block a name.  Put in the service account keyfile as a JSON string.  Copy the name into the YAML under PREFECT_GCS_BLOCK_NAME.
 
