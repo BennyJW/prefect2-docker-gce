@@ -1,2 +1,2 @@
-prefect==2.0.1
+prefect==2.0.4
 gcsfs==2022.7.1

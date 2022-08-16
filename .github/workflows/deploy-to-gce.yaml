@@ -8,13 +8,24 @@ on:
       - main
 
 env:
+
+  # set these values to reflect your GCP and Prefect configuration:
   GCP_ARTIFACT_REPOSITORY: prefect-dockers
   GCP_ARTIFACT_REPOSITORY_HOSTNAME: us-east1-docker.pkg.dev
+
+  PREFECT_GCS_BLOCK_NAME: gcs-block
+
+  # This script creates the Compute Engine VM.  Just be sure the instance name
+  # is not the same as any of your existing VMs.
+  #
+  # The e2-micro instance is the cheapest option. It is a shared core machine (.25 cores)
+  # that is allowed more power for short bursts when needed.  Works fine for the agent.
+  # Consider running the flows in separate infrastructure if you need real power.
   GCE_INSTANCE: prefect-docker-vm
   GCE_INSTANCE_ZONE: us-east1-b
   GCE_INSTANCE_MACHINE_TYPE: e2-micro
 
-  PREFECT_GCS_BLOCK_NAME: a-block-called-wanda
+  # leave as is
   PREFECT_API_URL: "https://api.prefect.cloud/api/accounts/${{ secrets.PREFECT_ACCOUNT_ID }}/workspaces/${{ secrets.PREFECT_WORKSPACE_ID }}"
 
 jobs:
@@ -22,10 +33,12 @@ jobs:
     name: Setup, Build, Publish, and Deploy
     runs-on: ubuntu-latest
 
-    # Add "id-token" with the intended permissions.
+    # id-token: write is used by Google auth to request an OpenID Connect JWT Token
+    # For an explanation:
+    # https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/about-security-hardening-with-openid-connect#adding-permissions-settings
     permissions:
-      contents: "read"
-      id-token: "write"
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout
@@ -36,16 +49,16 @@ jobs:
         with:
           python-version: "3.x"
 
+      # use the --no-cache-dir flag to skip install files;
+      # we don't need those for a one-time docker image build
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip --no-cache-dir
           pip install -r ./src/requirements.txt --no-cache-dir
 
-      # This step could be done manually, outside the Github Action
+      # These steps can be done manually for more control over the build process
       - name: Build and Apply Prefect deployments
         run: |
-          prefect work-queue ls
-          prefect deployment ls
           prefect deployment build ./src/my_flow.py:my_data_flow -n my_data_flow -sb gcs/$PREFECT_GCS_BLOCK_NAME -t test
           prefect deployment apply './my_data_flow-deployment.yaml'
         env:
@@ -67,6 +80,7 @@ jobs:
         run: |-
           gcloud --quiet auth configure-docker $GCP_ARTIFACT_REPOSITORY_HOSTNAME
 
+      # Set an environment variable for later use
       # https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-an-environment-variable
       - name: set docker image uri
         run: |-
@@ -82,16 +96,14 @@ jobs:
           --tag "${{ env.IMAGE_URI }}" \
           .
 
-      # Push the Docker image to Google Artifact Registry
+      # Push the Docker image to Google Artifact Registry.
       - name: Publish
         run: |-
           docker push "${{ env.IMAGE_URI }}"
 
-      # Google will keep copying new docker images to the machine;
-      # we can delete the disks (with --delete-disks=all) or just start
-      # over with a new VM;
-      # Continue-on-error so the flow continues even if this step fails
-      # (i.e., if no such instances have been created previously)
+      # For convenience; this way we do not need to check if the VM already exists for the
+      # next step of creating a new instance.
+      # The quiet option causes it to ignore the error if the VM does not yet exist.
       - name: Delete
         continue-on-error: true
         run: |-
